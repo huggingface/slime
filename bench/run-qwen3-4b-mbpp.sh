@@ -2,13 +2,6 @@
 # run-qwen3-4b-mbpp.sh
 # Benchmark script for SLIME on MBPP using 2 train + 6 infer GPUs (Disaggregated mode)
 
-# --- Configuration Constants ---
-ACTOR_NUM_GPUS_PER_NODE=2
-ROLLOUT_NUM_GPUS=4
-ROLLOUT_BATCH_SIZE=16
-N_SAMPLES_PER_PROMPT=16
-MAX_TOKENS_PER_GPU=9216
-
 pkill -9 sglang
 sleep 3
 ray stop --force
@@ -95,54 +88,94 @@ if [ ! -f "$PROMPT_SET" ]; then
 fi
 
 
+CKPT_ARGS=(
+   --hf-checkpoint /fsx/amine_dirhoussi/bench_rl/Qwen3-4B
+   --ref-load /fsx/amine_dirhoussi/bench_rl/Qwen3-4B_torch_dist
+   --load /fsx/amine_dirhoussi/bench_rl/Qwen3-4B_torch_dist
+   --save /fsx/amine_dirhoussi/bench_rl/Qwen3-4B_slime/
+   --no-load-optim
+   --no-load-rng
+   --save-interval 20
+)
+
+ROLLOUT_ARGS=(
+   --rollout-function-path slime.rollout.sglang_rollout.generate_rollout
+   --custom-generate-function-path bench.generate_with_mbpp.generate
+   --custom-rm-path bench.generate_with_mbpp.reward_func
+   --prompt-data ${PROMPT_SET}
+   --input-key prompt
+   --metadata-key metadata
+   --apply-chat-template
+   --rollout-shuffle
+   --num-epoch 2
+   --rollout-batch-size 16
+   --n-samples-per-prompt 16
+   --rollout-max-response-len 4096
+   --rollout-temperature 1
+
+   --global-batch-size 256
+   --balance-data
+)
+
+EVAL_ARGS=(
+)
+
+PERF_ARGS=(
+   --tensor-model-parallel-size 2
+   --sequence-parallel
+   --pipeline-model-parallel-size 1
+   --context-parallel-size 1
+   --expert-model-parallel-size 1
+   --expert-tensor-parallel-size 1
+
+   --recompute-granularity full
+   --recompute-method uniform
+   --recompute-num-layers 1
+
+   --use-dynamic-batch-size
+   --max-tokens-per-gpu 9216
+)
+
+GRPO_ARGS=(
+   --advantage-estimator grpo
+)
+
+OPTIMIZER_ARGS=(
+   --optimizer adam
+   --lr 1e-6
+   --weight-decay 0.1
+)
+
+WANDB_ARGS=(
+)
+
+SGLANG_ARGS=(
+    # tp_size
+   --rollout-num-gpus-per-engine 1
+)
+
+MISC_ARGS=(
+   --attention-dropout 0.0
+   --hidden-dropout 0.0
+   --accumulate-allreduce-grads-in-fp32
+   --attention-softmax-in-fp32
+   --attention-backend flash
+)
+
 # Submit Ray job. Notice:
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
    -- "$PYTHON" ${SCRIPT_DIR}/../train_async.py \
-   "${MODEL_ARGS[@]}" \
    --actor-num-nodes 1 \
-   --actor-num-gpus-per-node ${ACTOR_NUM_GPUS_PER_NODE} \
-   --rollout-num-gpus ${ROLLOUT_NUM_GPUS} \
-   --hf-checkpoint /fsx/amine_dirhoussi/bench_rl/Qwen3-4B \
-   --ref-load /fsx/amine_dirhoussi/bench_rl/Qwen3-4B_torch_dist \
-   --load /fsx/amine_dirhoussi/bench_rl/Qwen3-4B_torch_dist \
-   --save /fsx/amine_dirhoussi/bench_rl/Qwen3-4B_slime/ \
-   --no-load-optim \
-   --no-load-rng \
-   --save-interval 20 \
-   --rollout-function-path slime.rollout.sglang_rollout.generate_rollout \
-   --custom-generate-function-path bench.generate_with_mbpp.generate \
-   --custom-rm-path bench.generate_with_mbpp.reward_func \
-   --prompt-data ${PROMPT_SET} \
-   --input-key prompt \
-   --metadata-key metadata \
-   --apply-chat-template \
-   --rollout-shuffle \
-   --num-epoch 2 \
-   --rollout-batch-size ${ROLLOUT_BATCH_SIZE} \
-   --n-samples-per-prompt ${N_SAMPLES_PER_PROMPT} \
-   --rollout-max-response-len 4096 \
-   --rollout-temperature 1 \
-   --global-batch-size 256 \
-   --balance-data \
-   --tensor-model-parallel-size 2 \
-   --sequence-parallel \
-   --pipeline-model-parallel-size 1 \
-   --context-parallel-size 1 \
-   --expert-model-parallel-size 1 \
-   --expert-tensor-parallel-size 1 \
-   --recompute-granularity full \
-   --recompute-method uniform \
-   --recompute-num-layers 1 \
-   --use-dynamic-batch-size \
-   --max-tokens-per-gpu ${MAX_TOKENS_PER_GPU} \
-   --advantage-estimator grpo \
-   --optimizer adam \
-   --lr 1e-6 \
-   --weight-decay 0.1 \
-   --rollout-num-gpus-per-engine 1 \
-   --attention-dropout 0.0 \
-   --hidden-dropout 0.0 \
-   --accumulate-allreduce-grads-in-fp32 \
-   --attention-softmax-in-fp32 \
-   --attention-backend flash
+   --actor-num-gpus-per-node 2 \
+   --rollout-num-gpus 4 \
+   ${MODEL_ARGS[@]} \
+   ${CKPT_ARGS[@]} \
+   ${ROLLOUT_ARGS[@]} \
+   ${OPTIMIZER_ARGS[@]} \
+   ${GRPO_ARGS[@]} \
+   ${WANDB_ARGS[@]} \
+   ${PERF_ARGS[@]} \
+   ${EVAL_ARGS[@]} \
+   ${SGLANG_ARGS[@]} \
+   ${MISC_ARGS[@]}

@@ -14,7 +14,7 @@ echo "Starting SLIME MBPP benchmark container..."
 
 # Execute the benchmark script inside the enroot container
 srun \
-    --container-image="amine_dirhoussi@registry.hpc-cluster-hopper.hpc.internal.huggingface.tech#library/slimerl:latest" \
+    --container-image="registry.hpc-cluster-hopper.hpc.internal.huggingface.tech#library/slimerl:latest" \
     --container-mounts="/fsx:/fsx" \
-    --container-workdir="/fsx/amine_dirhoussi/slime" \
-    bash -c "bash bench/run-qwen3-4b-mbpp.sh"
+    --container-workdir="/fsx/amine_dirhoussi/slime/bench" \
+    bash -c "bash run-qwen3-4b-mbpp.sh"
