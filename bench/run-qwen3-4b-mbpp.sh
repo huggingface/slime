@@ -45,8 +45,10 @@ MODEL_ARGS=(
 
 
 # --- Auto-Convert HF Checkpoint to Megatron ---
-HF_PATH="/fsx/amine_dirhoussi/bench_rl/Qwen3-4B"
-SAVE_PATH="/fsx/amine_dirhoussi/bench_rl/Qwen3-4B_torch_dist"
+BASE_PATH="/fsx/amine_dirhoussi/bench_rl"
+HF_PATH="${BASE_PATH}/Qwen3-4B"
+SAVE_PATH="${BASE_PATH}/Qwen3-4B_torch_dist"
+SLIME_SAVE_PATH="${BASE_PATH}/Qwen3-4B_slime/"
 
 # Check if the conversion was already done by looking for the Megatron directory
 if [ ! -d "$SAVE_PATH" ] || [ -z "$(ls -A $SAVE_PATH)" ]; then
@@ -89,10 +91,10 @@ fi
 
 
 CKPT_ARGS=(
-   --hf-checkpoint /fsx/amine_dirhoussi/bench_rl/Qwen3-4B
-   --ref-load /fsx/amine_dirhoussi/bench_rl/Qwen3-4B_torch_dist
-   --load /fsx/amine_dirhoussi/bench_rl/Qwen3-4B_torch_dist
-   --save /fsx/amine_dirhoussi/bench_rl/Qwen3-4B_slime/
+   --hf-checkpoint ${HF_PATH}
+   --ref-load ${SAVE_PATH}
+   --load ${SAVE_PATH}
+   --save ${SLIME_SAVE_PATH}
    --no-load-optim
    --no-load-rng
    --save-interval 20
