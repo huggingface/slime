@@ -107,7 +107,7 @@ ROLLOUT_ARGS=(
    --prompt-data ${PROMPT_SET}
    --input-key prompt
    --metadata-key metadata
-   --apply-chat-template
+   
    --rollout-shuffle
    --num-epoch 2
    --rollout-batch-size 16
@@ -149,6 +149,9 @@ OPTIMIZER_ARGS=(
 )
 
 WANDB_ARGS=(
+   --use-wandb
+   --wandb-project slime-bench-qwen3-4b
+   --wandb-group qwen3-4b-mbpp
 )
 
 SGLANG_ARGS=(
@@ -170,7 +173,7 @@ ray job submit --address="http://127.0.0.1:8265" \
    -- "$PYTHON" ${SCRIPT_DIR}/../train_async.py \
    --actor-num-nodes 1 \
    --actor-num-gpus-per-node 2 \
-   --rollout-num-gpus 4 \
+   --rollout-num-gpus 6 \
    ${MODEL_ARGS[@]} \
    ${CKPT_ARGS[@]} \
    ${ROLLOUT_ARGS[@]} \

@@ -12,6 +12,10 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from slime.utils.types import Sample
 
+SYSTEM_PROMPT = """You are an expert Python programmer.
+You must output your final code strictly enclosed in <code> and </code> tags.
+Do not use standard markdown code blocks."""
+
 
 def run_code_in_sandbox(code: str, test_list: list[str], timeout: int = 3):
     # Combine the generated code and the tests
@@ -52,10 +56,20 @@ async def generate(args, sample: Sample, sampling_params: dict[str, Any]) -> Sam
     for turn in range(max_turns):
         prev_resp_len = len(sample.response)
 
+        if sample.metadata is None:
+            sample.metadata = {}
+
+        # 1. Apply system prompt chat template on the first turn
+        if turn == 0 and not sample.metadata.get("_is_templated", False):
+            if isinstance(sample.prompt, str):
+                messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": sample.prompt}]
+                sample.prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+            sample.metadata["_is_templated"] = True
+
         # Deepcopy to prevent mutating max_new_tokens for the whole group reference
         current_sampling_params = copy.deepcopy(sampling_params)
 
-        # 1. Generate code using the default SGLang runner
+        # 2. Generate code using the default SGLang runner
         sample = await default_generate(args, sample, current_sampling_params)
 
         if sample.status not in [Sample.Status.PENDING, Sample.Status.COMPLETED]:
@@ -63,9 +77,17 @@ async def generate(args, sample: Sample, sampling_params: dict[str, Any]) -> Sam
 
         new_text = sample.response[prev_resp_len:]
 
-        # 2. Extract code block
-        code_blocks = re.findall(r"```(?:python)?\n(.*?)\n```", new_text, re.DOTALL)
-        code = code_blocks[-1] if code_blocks else new_text
+        # 3. Extract code block robustly
+        code_blocks = re.findall(r"<code>(.*?)</code>", new_text, re.DOTALL)
+        if code_blocks:
+            code = code_blocks[-1].strip()
+        else:
+            unclosed_blocks = re.findall(r"<code>(.*)", new_text, re.DOTALL)
+            if unclosed_blocks:
+                code = unclosed_blocks[-1].strip()
+            else:
+                legacy_blocks = re.findall(r"```(?:python)?\n(.*?)\n```", new_text, re.DOTALL)
+                code = legacy_blocks[-1].strip() if legacy_blocks else new_text.strip()
 
         passed, feedback = await asyncio.to_thread(run_code_in_sandbox, code, test_list)
 
