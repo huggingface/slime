@@ -8,6 +8,29 @@ RUN_PATH = "slime-bench-qwen3-4b/runs/3uw3gu4b"
 OUTPUT_PREFIX = "slime_metrics"
 
 
+def _compute_pipeline_bubble(df):
+    """Compute pure pipeline bubble ratio, excluding weight sync time.
+
+    The logged ``perf/wait_time_ratio`` equals ``train_wait_time / step_time``,
+    but ``train_wait_time`` includes ``update_weights_time`` because weight sync
+    runs while the ``train_wait`` timer is still accumulating.  We subtract it
+    to isolate true idle time where the trainer does no useful work.
+
+    Falls back to the raw ``wait_time_ratio`` when the columns needed for the
+    corrected calculation are not all present.
+    """
+    needed = ["perf/train_wait_time", "perf/update_weights_time", "perf/step_time"]
+    if all(c in df.columns for c in needed):
+        bubble_df = df.dropna(subset=needed)
+        if len(bubble_df) > 0:
+            pure_wait = (bubble_df["perf/train_wait_time"] - bubble_df["perf/update_weights_time"]).clip(lower=0)
+            return (pure_wait / bubble_df["perf/step_time"]).mean()
+    # Fallback: use the raw ratio if corrected columns are unavailable.
+    if "perf/wait_time_ratio" in df.columns:
+        return df["perf/wait_time_ratio"].mean()
+    return None
+
+
 def main():
     api = wandb.Api()
     run = api.run(RUN_PATH)
@@ -20,10 +43,11 @@ def main():
         "perf/effective_tokens_per_gpu_per_sec",
         "perf/actor_train_tok_per_s",
         "perf/actor_train_time",
+        "perf/train_wait_time",
         "perf/update_weights_time",
         "perf/wait_time_ratio",
         "perf/rollout_time",
-        "rollout/rewards",
+        "rollout/raw_reward",
         "train/ppo_kl",
         "train/train_rollout_logprob_abs_diff",
         "_runtime",
@@ -42,6 +66,11 @@ def main():
 
     # Extract rollout_num_gpus from config (default 6 if not found)
     rollout_num_gpus = run.config.get("rollout_num_gpus", 6)
+
+    # Extract data_parallel_size to scale per-rank train tokens to global.
+    # perf/actor_train_tok_per_s is logged from a single DP rank, so its token
+    # count must be multiplied by dp_size to match the global gen token count.
+    data_parallel_size = run.config.get("data_parallel_size", 1)
 
     # ---- Throughput Calculations (T1, T2, T3) ----
 
@@ -67,7 +96,8 @@ def main():
     # Training metrics
     if "perf/actor_train_tok_per_s" in df_clean.columns and "perf/actor_train_time" in df_clean.columns and "perf/train_time" in df_clean.columns and "perf/step_time" in df_clean.columns:
         train_df = df_clean.dropna(subset=["perf/actor_train_tok_per_s", "perf/actor_train_time", "perf/train_time", "perf/step_time"])
-        total_train_tokens = (train_df["perf/actor_train_tok_per_s"] * train_df["perf/actor_train_time"]).sum()
+        # actor_train_tok_per_s is logged from one DP rank; scale to global token count.
+        total_train_tokens = (train_df["perf/actor_train_tok_per_s"] * train_df["perf/actor_train_time"]).sum() * data_parallel_size
         total_step_time = train_df["perf/step_time"].sum()
         total_train_time = train_df["perf/train_time"].sum()
 
@@ -90,11 +120,13 @@ def main():
         t1_e2e_effective_tokens_per_sec_mean = None
 
     # L2: Reward trend (slope of reward over steps)
-    if "rollout/rewards" in df_clean.columns:
-        df_rewards = df_clean.dropna(subset=["rollout/rewards"])
+    # Use raw_reward instead of rewards, because rollout/rewards may contain
+    # group-normalized values (GRPO/GSPO) that are ~0 by construction.
+    if "rollout/raw_reward" in df_clean.columns:
+        df_rewards = df_clean.dropna(subset=["rollout/raw_reward"])
         if len(df_rewards) > 1:
             # We use the index (which is just the wandb row index) or _step
-            slope, _, _, _, _ = linregress(df_rewards.index, df_rewards["rollout/rewards"])
+            slope, _, _, _, _ = linregress(df_rewards.index, df_rewards["rollout/raw_reward"])
         else:
             slope = None
     else:
@@ -103,6 +135,11 @@ def main():
     # L4: Importance Sampling Ratio Bound
     # logprob_abs_diff = |log(pi_train) - log(pi_rollout)| = |log(rho)|
     # exp(|log(rho)|) = max(rho, 1/rho)  -> This captures worst-case off-policy drift
+    #
+    # NOTE: The wandb value is already a per-sample mean of |delta log p| at each step.
+    # We compute exp(mean(|delta|)) which, by Jensen's inequality (exp is convex),
+    # is a lower bound on the true mean(exp(|delta|)).  This gives a conservative
+    # estimate of the IS ratio bound.
     if "train/train_rollout_logprob_abs_diff" in df_clean.columns:
         is_ratio_bounds = np.exp(df_clean["train/train_rollout_logprob_abs_diff"].dropna())
         l4_is_ratio_mean = is_ratio_bounds.mean()
@@ -159,12 +196,17 @@ def main():
         "U4_gpu_idle_time_pct": u4_gpu_idle_time_pct,
         # 4.3 Async Pipeline Efficiency
         "A1_weight_sync_latency_sec_mean": df_clean.get("perf/update_weights_time", pd.Series(dtype=float)).mean(),
-        "A3_pipeline_bubble_ratio_mean": df_clean.get("perf/wait_time_ratio", pd.Series(dtype=float)).mean(),
+        # A3: Pure pipeline bubble excluding weight sync.
+        # perf/wait_time_ratio = train_wait_time / step_time, but train_wait_time
+        # includes update_weights_time (weight sync runs while the train_wait
+        # timer is accumulating). Subtract it to get true idle time.
+        "A3_pipeline_bubble_ratio_mean": _compute_pipeline_bubble(df_clean),
         # 4.4 Multi-turn & Straggler
         "M2_rollout_time_sec_mean": df_clean.get("perf/rollout_time", pd.Series(dtype=float)).mean(),
         # 4.5 Learning Sanity Checks
-        "L1_reward_mean": df_clean.get("rollout/rewards", pd.Series(dtype=float)).mean(),
-        "L1_reward_std": df_clean.get("rollout/rewards", pd.Series(dtype=float)).std(),
+        # Use raw_reward to avoid group-normalized values (GRPO/GSPO) that are ~0.
+        "L1_reward_mean": df_clean.get("rollout/raw_reward", pd.Series(dtype=float)).mean(),
+        "L1_reward_std": df_clean.get("rollout/raw_reward", pd.Series(dtype=float)).std(),
         "L2_reward_trend_slope": slope,
         "L3_kl_divergence_mean": df_clean.get("train/ppo_kl", pd.Series(dtype=float)).mean(),
         "L4_is_ratio_bound_mean": l4_is_ratio_mean,
@@ -214,7 +256,7 @@ def main():
 | Metric | Value | Description |
 |---|---|---|
 | **A1: Weight sync latency (Mean)** | `{(summary.get("A1_weight_sync_latency_sec_mean", 0) or 0) * 1000:.4f}` ms | Wall-clock time to broadcast new weights to inference engine |
-| **A3: Pipeline bubble (Mean)** | `{(summary.get("A3_pipeline_bubble_ratio_mean", 0) or 0) * 100:.2f}` % | Time spent in synchronization barriers / waiting |
+| **A3: Pipeline bubble (Mean)** | `{(summary.get("A3_pipeline_bubble_ratio_mean", 0) or 0) * 100:.2f}` % | Pure idle time (train_wait minus weight sync) / step time |
 
 ## 4.4 Multi-turn & Straggler
 
@@ -230,7 +272,7 @@ def main():
 | **L1: Reward (Std Dev)** | `{summary.get("L1_reward_std", 0) or 0:.6f}` | Standard deviation of reward per step |
 | **L2: Reward trend (Slope)** | `{summary.get("L2_reward_trend_slope", 0) or 0:.2e}` | Linear regression slope of reward over training steps |
 | **L3: KL divergence (Mean)** | `{summary.get("L3_kl_divergence_mean", 0) or 0:.6f}` nats | Between current policy and behavior policy |
-| **L4: IS Ratio Bound (Mean)** | `{summary.get("L4_is_ratio_bound_mean", 0) or 0:.4f}` | Mean of `exp(abs(log(pi_train) - log(pi_rollout)))` |
+| **L4: IS Ratio Bound (Mean)** | `{summary.get("L4_is_ratio_bound_mean", 0) or 0:.4f}` | Lower bound via `exp(mean(abs(log(pi_train) - log(pi_rollout))))` (Jensen) |
 | **L4: IS Ratio Bound (Max)** | `{summary.get("L4_is_ratio_bound_max", 0) or 0:.4f}` | Worst-case off-policy drift bound |
 
 ## 4.6 Resource

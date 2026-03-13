@@ -71,14 +71,15 @@ fi
 export MASTER_ADDR=${MASTER_ADDR:-"127.0.0.1"}
 
 
-# Launch Ray head on the single node with 8 GPUs (locally)
+# Launch Ray head on the single node with (actor-num-gpus-per-node + rollout-num-gpus = 6) GPUs (locally)
 ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-stats
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
     \"PYTHONPATH\": \"${SCRIPT_DIR}/..:${SCRIPT_DIR}:/root/Megatron-LM/\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
-    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\"
+    \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
+    \"PYTORCH_ALLOC_CONF\": \"expandable_segments:True\"
   }
 }"
 
@@ -107,15 +108,16 @@ ROLLOUT_ARGS=(
    --prompt-data ${PROMPT_SET}
    --input-key prompt
    --metadata-key metadata
-   
+
    --rollout-shuffle
-   --num-epoch 2
-   --rollout-batch-size 16
+   --num-epoch 1
+   --rollout-batch-size 8
    --n-samples-per-prompt 16
-   --rollout-max-response-len 4096
+   --rollout-max-context-len 24576
+   --rollout-max-response-len 24576
    --rollout-temperature 1
 
-   --global-batch-size 256
+   --global-batch-size 128
    --balance-data
 )
 
@@ -123,6 +125,7 @@ EVAL_ARGS=(
 )
 
 PERF_ARGS=(
+    # DP = world_size // (TP+ PP+CP)
    --tensor-model-parallel-size 2
    --sequence-parallel
    --pipeline-model-parallel-size 1
@@ -132,10 +135,15 @@ PERF_ARGS=(
 
    --recompute-granularity full
    --recompute-method uniform
-   --recompute-num-layers 1
+   --recompute-num-layers 36 # matches acc checkpointing all layers
 
    --use-dynamic-batch-size
-   --max-tokens-per-gpu 9216
+   --max-tokens-per-gpu 24576
+
+    # Fuse LM_head
+    --log-probs-chunk-size 4096
+    # Save memory
+    --recompute-loss-function
 )
 
 GRPO_ARGS=(
