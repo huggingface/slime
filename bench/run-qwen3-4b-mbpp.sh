@@ -137,11 +137,12 @@ PERF_ARGS=(
    --recompute-method uniform
    --recompute-num-layers 36 # matches acc checkpointing all layers
 
-   --use-dynamic-batch-size
-   --max-tokens-per-gpu 24576
+    # dynamic microbatch based on max tokens per gpus
+    --max-tokens-per-gpu 4096
+    --use-dynamic-batch-size
 
-    # Fuse LM_head
-    --log-probs-chunk-size 4096
+    # SLIME doesn't chunk the linear projection !!
+    --log-probs-chunk-size 1024
     # Save memory
     --recompute-loss-function
 )
