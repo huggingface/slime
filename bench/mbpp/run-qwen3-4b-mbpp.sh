@@ -56,9 +56,9 @@ if [ ! -d "$SAVE_PATH" ] || [ -z "$(ls -A $SAVE_PATH)" ]; then
 
     # We need to temporarily source the default qwen3-4B args for the conversion script
     # to know the architecture parameters
-    source ${SCRIPT_DIR}/../scripts/models/qwen3-4B.sh
+    source ${SCRIPT_DIR}/../../scripts/models/qwen3-4B.sh
 
-    PYTHONPATH="${SCRIPT_DIR}/..:${SCRIPT_DIR}:/root/Megatron-LM/" $PYTHON ${SCRIPT_DIR}/../tools/convert_hf_to_torch_dist.py \
+    PYTHONPATH="${SCRIPT_DIR}/../..:${SCRIPT_DIR}/..:/root/Megatron-LM/" $PYTHON ${SCRIPT_DIR}/../../tools/convert_hf_to_torch_dist.py \
         ${MODEL_ARGS[@]} \
         --hf-checkpoint ${HF_PATH} \
         --save ${SAVE_PATH}
@@ -76,7 +76,7 @@ ray start --head --node-ip-address ${MASTER_ADDR} --num-gpus 8 --disable-usage-s
 
 RUNTIME_ENV_JSON="{
   \"env_vars\": {
-    \"PYTHONPATH\": \"${SCRIPT_DIR}/..:${SCRIPT_DIR}:/root/Megatron-LM/\",
+    \"PYTHONPATH\": \"${SCRIPT_DIR}/../..:${SCRIPT_DIR}/..:/root/Megatron-LM/\",
     \"CUDA_DEVICE_MAX_CONNECTIONS\": \"1\",
     \"NCCL_NVLS_ENABLE\": \"${HAS_NVLINK}\",
     \"PYTORCH_ALLOC_CONF\": \"expandable_segments:True\"
@@ -103,8 +103,8 @@ CKPT_ARGS=(
 
 ROLLOUT_ARGS=(
    --rollout-function-path slime.rollout.sglang_rollout.generate_rollout
-   --custom-generate-function-path bench.generate_with_mbpp.generate
-   --custom-rm-path bench.generate_with_mbpp.reward_func
+   --custom-generate-function-path bench.mbpp.generate_with_mbpp.generate
+   --custom-rm-path bench.mbpp.generate_with_mbpp.reward_func
    --prompt-data ${PROMPT_SET}
    --input-key prompt
    --metadata-key metadata
@@ -135,11 +135,11 @@ PERF_ARGS=(
 
    --recompute-granularity full
    --recompute-method uniform
-   --recompute-num-layers 36 # matches acc checkpointing all layers
+   --recompute-num-layers 1 # each layer independently checkpointed (lower peak backward memory)
 
     # dynamic microbatch based on max tokens per gpus
-    --max-tokens-per-gpu 4096
     --use-dynamic-batch-size
+    --max-tokens-per-gpu 16384
 
     # SLIME doesn't chunk the linear projection !!
     --log-probs-chunk-size 1024
@@ -155,6 +155,11 @@ OPTIMIZER_ARGS=(
    --optimizer adam
    --lr 1e-6
    --weight-decay 0.1
+
+   # 24k support
+   --overlap-cpu-optimizer-d2h-h2d
+   --use-precision-aware-optimizer
+   --optimizer-cpu-offload
 )
 
 WANDB_ARGS=(
@@ -179,7 +184,7 @@ MISC_ARGS=(
 # Submit Ray job. Notice:
 ray job submit --address="http://127.0.0.1:8265" \
    --runtime-env-json="${RUNTIME_ENV_JSON}" \
-   -- "$PYTHON" ${SCRIPT_DIR}/../train_async.py \
+    -- "$PYTHON" ${SCRIPT_DIR}/../../train_async.py \
    --actor-num-nodes 1 \
    --actor-num-gpus-per-node 2 \
    --rollout-num-gpus 6 \
